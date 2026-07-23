@@ -1,0 +1,273 @@
+<!-- miccheck_js.html — проверка микрофона с визуализацией сигнала на JavaScript (Web Audio API) -->
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>🎤 MicCheck Pro — JavaScript</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            background: #1a1a2e;
+            color: #eee;
+            font-family: 'Segoe UI', Arial, sans-serif;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            min-height: 100vh;
+            padding: 20px;
+        }
+        .container {
+            background: #16213e;
+            padding: 25px;
+            border-radius: 15px;
+            width: 800px;
+            box-shadow: 0 0 30px rgba(0,0,0,0.5);
+        }
+        h1 { text-align: center; margin-bottom: 15px; color: #4fc3f7; }
+        .status-row {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 10px;
+            flex-wrap: wrap;
+            gap: 10px;
+        }
+        .status-text { font-size: 18px; font-weight: bold; }
+        .level-info { font-size: 14px; color: #aaa; }
+        .bar-container {
+            background: #0f3460;
+            border-radius: 10px;
+            height: 25px;
+            margin: 10px 0;
+            overflow: hidden;
+            position: relative;
+        }
+        .bar-fill {
+            height: 100%;
+            border-radius: 10px;
+            transition: width 0.1s;
+            background: linear-gradient(90deg, #4CAF50, #FFEB3B, #F44336);
+            width: 0%;
+        }
+        canvas {
+            display: block;
+            width: 100%;
+            height: 200px;
+            background: #0a0a1a;
+            border-radius: 8px;
+            margin-top: 10px;
+            cursor: pointer;
+        }
+        .controls {
+            margin-top: 15px;
+            display: flex;
+            gap: 10px;
+            flex-wrap: wrap;
+        }
+        button {
+            padding: 10px 20px;
+            border: none;
+            border-radius: 8px;
+            background: #0f3460;
+            color: #fff;
+            cursor: pointer;
+            transition: 0.3s;
+            flex: 1;
+            min-width: 100px;
+        }
+        button:hover { background: #1a5276; }
+        button:disabled { opacity: 0.5; cursor: not-allowed; }
+        .info { margin-top: 10px; font-size: 13px; color: #888; text-align: center; }
+        .peak-indicator {
+            position: absolute;
+            right: 5px;
+            top: -2px;
+            font-size: 12px;
+            color: #fff;
+        }
+    </style>
+</head>
+<body>
+<div class="container">
+    <h1>🎤 MicCheck Pro</h1>
+    <div class="status-row">
+        <span class="status-text" id="status">🔴 Ожидание</span>
+        <span class="level-info" id="levelInfo">Громкость: 0% | Пик: 0%</span>
+    </div>
+    <div class="bar-container">
+        <div class="bar-fill" id="levelBar" style="width:0%;"></div>
+        <span class="peak-indicator" id="peakLabel">0%</span>
+    </div>
+    <canvas id="oscilloscope" width="750" height="200"></canvas>
+    <div class="controls">
+        <button id="startBtn">▶ Запустить</button>
+        <button id="stopBtn" disabled>⏹ Остановить</button>
+        <button id="resetBtn">↺ Сбросить</button>
+    </div>
+    <div class="info">Нажмите "Запустить" и разрешите доступ к микрофону</div>
+</div>
+
+<script>
+    let audioContext = null;
+    let analyser = null;
+    let source = null;
+    let stream = null;
+    let running = false;
+    let animationId = null;
+    let peak = 0.0;
+    let smoothing = 0.99;
+
+    const canvas = document.getElementById('oscilloscope');
+    const ctx = canvas.getContext('2d');
+    const statusEl = document.getElementById('status');
+    const levelInfoEl = document.getElementById('levelInfo');
+    const levelBar = document.getElementById('levelBar');
+    const peakLabel = document.getElementById('peakLabel');
+    const startBtn = document.getElementById('startBtn');
+    const stopBtn = document.getElementById('stopBtn');
+    const resetBtn = document.getElementById('resetBtn');
+
+    canvas.width = canvas.clientWidth || 750;
+    canvas.height = 200;
+
+    async function startAudio() {
+        try {
+            stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+            audioContext = new (window.AudioContext || window.webkitAudioContext)();
+            source = audioContext.createMediaStreamSource(stream);
+            analyser = audioContext.createAnalyser();
+            analyser.fftSize = 2048;
+            analyser.smoothingTimeConstant = 0.8;
+            source.connect(analyser);
+
+            running = true;
+            startBtn.disabled = true;
+            stopBtn.disabled = false;
+            statusEl.textContent = '🟢 Аудио обнаружено';
+            statusEl.style.color = '#4CAF50';
+            draw();
+        } catch (err) {
+            alert('Ошибка доступа к микрофону: ' + err.message);
+        }
+    }
+
+    function stopAudio() {
+        running = false;
+        if (animationId) {
+            cancelAnimationFrame(animationId);
+            animationId = null;
+        }
+        if (source) {
+            source.disconnect();
+            source = null;
+        }
+        if (stream) {
+            stream.getTracks().forEach(track => track.stop());
+            stream = null;
+        }
+        if (audioContext && audioContext.state !== 'closed') {
+            audioContext.close();
+            audioContext = null;
+        }
+        startBtn.disabled = false;
+        stopBtn.disabled = true;
+        statusEl.textContent = '🔴 Остановлен';
+        statusEl.style.color = '#f44336';
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        levelBar.style.width = '0%';
+        peakLabel.textContent = '0%';
+        levelInfoEl.textContent = 'Громкость: 0% | Пик: 0%';
+        peak = 0;
+    }
+
+    function reset() {
+        stopAudio();
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        levelBar.style.width = '0%';
+        peakLabel.textContent = '0%';
+        levelInfoEl.textContent = 'Громкость: 0% | Пик: 0%';
+        peak = 0;
+        startBtn.disabled = false;
+        stopBtn.disabled = true;
+        statusEl.textContent = '🔄 Сброшено';
+        statusEl.style.color = '#FF9800';
+        setTimeout(() => {
+            if (!running) {
+                statusEl.textContent = '🔴 Ожидание';
+                statusEl.style.color = '#f44336';
+            }
+        }, 1000);
+    }
+
+    function draw() {
+        if (!running || !analyser) return;
+        const bufferLength = analyser.fftSize;
+        const dataArray = new Float32Array(bufferLength);
+        analyser.getFloatTimeDomainData(dataArray);
+
+        // Вычисление RMS и уровня
+        let sum = 0;
+        let localPeak = 0;
+        for (let i = 0; i < bufferLength; i++) {
+            sum += dataArray[i] * dataArray[i];
+            if (Math.abs(dataArray[i]) > localPeak) localPeak = Math.abs(dataArray[i]);
+        }
+        const rms = Math.sqrt(sum / bufferLength);
+        peak = Math.max(peak * smoothing, localPeak);
+        const percent = Math.min(100, rms * 300);
+        const peakPercent = Math.min(100, peak * 100);
+
+        // Обновление UI
+        levelBar.style.width = percent + '%';
+        peakLabel.textContent = Math.round(peakPercent) + '%';
+        levelInfoEl.textContent = `Громкость: ${Math.round(percent)}% | Пик: ${Math.round(peakPercent)}%`;
+
+        if (percent > 5) {
+            statusEl.textContent = '🟢 Аудио обнаружено';
+            statusEl.style.color = '#4CAF50';
+        } else {
+            statusEl.textContent = '🔴 Тишина';
+            statusEl.style.color = '#f44336';
+        }
+
+        // Отрисовка осциллограммы
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        const w = canvas.width;
+        const h = canvas.height;
+        const centerY = h / 2;
+
+        ctx.beginPath();
+        ctx.strokeStyle = '#00BCD4';
+        ctx.lineWidth = 1.5;
+        const step = Math.floor(bufferLength / w);
+        for (let i = 0; i < w; i++) {
+            const idx = Math.min(i * step, bufferLength - 1);
+            const x = i;
+            const y = centerY - dataArray[idx] * centerY * 0.9;
+            if (i === 0) ctx.moveTo(x, y);
+            else ctx.lineTo(x, y);
+        }
+        ctx.stroke();
+
+        // Центральная линия
+        ctx.beginPath();
+        ctx.strokeStyle = 'rgba(255,255,255,0.1)';
+        ctx.lineWidth = 1;
+        ctx.moveTo(0, centerY);
+        ctx.lineTo(w, centerY);
+        ctx.stroke();
+
+        animationId = requestAnimationFrame(draw);
+    }
+
+    startBtn.addEventListener('click', startAudio);
+    stopBtn.addEventListener('click', stopAudio);
+    resetBtn.addEventListener('click', reset);
+
+    // Обработка закрытия страницы
+    window.addEventListener('beforeunload', () => {
+        if (running) stopAudio();
+    });
+</script>
+</body>
+</html>
